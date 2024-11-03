@@ -1,8 +1,8 @@
 const express = require('express');
-//const mysql = require('mysql2');
+//const mysql = require('mysql2/promise');
 const path = require('path');
 const bodyParser = require('body-parser');
-const { query, pool } = require('./db'); 
+const { query, rawQuery, pool } = require('./db'); 
 
 const { v4: uuidv4 } = require('uuid');
 const JsBarcode = require('jsbarcode');
@@ -11,9 +11,6 @@ const moment = require('moment');
  
 const app = express();
 const port = 3000;
-
-// Serve static files from the 'productImages' folder
-app.use('/productImages', express.static(path.join(__dirname, 'productImages')));
 
 app.use(bodyParser.json());
 
@@ -34,43 +31,45 @@ const generateBarcode = (barcode) => {
     return canvas.toDataURL(); // Return the image as a Data URL
 };
 
+//**********SERVER CONNECTION ROUTES************
+
+// PING SERVER
+// Ping server to determine if server is reachable or unreachable
+app.get('/ping', (req, res) => {
+    res.status(200).send('Pong');
+});
+
 //**********AUTHENTICATION ROUTES************
 
 // REGISTRATION
+// Add new user to Users table in database
 app.post('/registration/user/name/password/role', async (req, res) => {
     const { userName, userPassword, userRole } = req.body;
     console.log(` REGISTRATION - Received request TO ADD TO USER TABLE:\n userName: ${userName} \n userPassword: ${userPassword} \n userRole: ${userRole}`);
 
     try {
-        // Check if the user already exists
-        const existingUser = await query('SELECT user_id FROM Users WHERE username = ?', [userName]);
-        if (existingUser.length > 0) {
-            const existingUserID = existingUser[0]?.user_id; 
-            console.log('REGISTRATION - Existing User ID: ', existingUserID);
-            res.json({ message: 'User already exists' });
+        // Check if the username already exists
+        const existingUsername = await query('SELECT username FROM Users WHERE username = ?', [userName]);
+
+        const username = existingUsername[0]?.username;
+        if (username && username.toLowerCase() === userName.toLowerCase()) {
+            console.log('REGISTRATION - Username already exists');
+            res.json({ message: 'Username already exists' });
         } else {
-            // Check if the username already exists
-            const existingUsername = await query('SELECT username FROM Users WHERE username = ?', [userName]);
+            // Add new user and return their user_id
+            const result = await query('CALL AddUser(?, ?, ?)', [userName, userPassword, userRole]);
+            const newUserID = result[0][0]?.user_id;
+            console.log('New User ID: ', newUserID);
 
-            const username = existingUsername[0]?.username;
-            if (username && username.toLowerCase() === userName.toLowerCase()) {
-                console.log('REGISTRATION - Username already exists');
-                res.json({ message: 'Username already exists' });
+            if (newUserID) {
+                // Return the newly created user_id
+                res.json({ message: 'User registered successfully' });
             } else {
-                // Add new user and return their user_id
-                const result = await query('CALL AddUser(?, ?,?)', [userName, userPassword, userRole]);
-                const newUserID = result[0][0]?.user_id;
-                console.log('New User ID: ', newUserID);
-
-                if (newUserID) {
-                    // Return the newly created user_id
-                    res.json({ message: 'User registered successfully' });
-                } else {
-                    // Handle case where user creation fails
-                    res.status(400).json({ message: 'Failed to add user' });
-                }  
-            }
+                // Handle case where user creation fails
+                res.status(400).json({ message: 'Failed to add user' });
+            }  
         }
+        
     } catch (err) {
         console.error(`Error adding user: ${err.message}`);
         res.status(500).json({ error: err.message });
@@ -78,11 +77,10 @@ app.post('/registration/user/name/password/role', async (req, res) => {
 });
 
 // LOG IN
-// edit!! add for checking if username and password is correct before logging in
-// add for checking if user exists, if not send message to create account
+// Check if user exists based oin username in the Users table
 app.post('/login/user/name/role', async (req, res) => {
     const { userName, userRole } = req.body;
-    console.log(`LOG IN - Received request TO CHECK USER TABLE:\n userID: ${userName} \n userRole: ${userRole}`);
+    console.log(`LOG IN - Received request TO CHECK USER TABLE:\n username: ${userName} \n userRole: ${userRole}`);
 
     try {
         // Check if the user already exists, filter by username and role
@@ -96,10 +94,36 @@ app.post('/login/user/name/role', async (req, res) => {
                 password_hash: existingUser.password_hash 
             });
         } else {
-            res.status(404).json({ message: "User not found" });
+            console.log('User not found: ', result);
+            return res.sendStatus(404);
         }
     } catch (err) {
         console.error(`LOG IN - Error checking user: ${err.message}`);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+// CHANGE PASSWORD
+// Change user password based on username in the Users table
+app.post('/login/user/change/password', async (req, res) => {
+    const { userName, userPassword } = req.body;
+    console.log(`CHANGE PASSWORD - Received request TO CHECK USER TABLE:\n username: ${userName}, password: ${userPassword}`);
+
+    try {
+        // Check if the user already exists, filter by username and role
+        const result = await query('SELECT user_id FROM Users WHERE username = ?', [userName]);
+
+        if (result.length > 0) {
+            const existingUserID = result[0]?.user_id;  
+            const results = await query('CALL CreatePasswordReset(?, ?)', [existingUserID, userPassword]);
+            console.log('CHANGE PASSWORD - Existing User ID: ', results);
+            res.json({ message: 'Password changed successfully' });
+        } else {
+            console.log('User not found: ', result);
+            res.status(404).json({ message: 'User does not exist' });
+        }
+    } catch (err) {
+        console.error(`CHANGE PASSWORD - Error checking user: ${err.message}`);
         res.status(500).json({ error: err.message });
     }
 });
@@ -140,7 +164,7 @@ app.get('/admin/latest/categories', async (req, res) => {
         } 
         
     } catch (err) {
-        console.error('Error adding category:', err.message);
+        console.error('Error retrieving categories:', err.message);
         res.status(500).json({ error: err.message });
     }
 });
@@ -260,7 +284,7 @@ app.post('/admin/sales-report/two-dates', async (req, res) => {
 //Retrieves report details from sales reports table (single input)
 app.get('/admin/sales-report/one-date/items', async (req, res) => {
     const reportID = req.query.reportID;
-    console.log(` SALES REPORT ITEMS - Received request TO GET REPORT ITEMS for this report ID: ${reportID}`);
+    console.log(` SALES REPORT ITEMS - Received request TO GET REPORT ITEMS for this report ID: `, reportID);
 
     if (!reportID) {
         console.error(' SALES REPORT ITEMS - ReportID is required');
@@ -315,23 +339,6 @@ app.get('/admin/report-history', async(req, res) => {
     }
 });
 
-
-app.get('/admin/latest/categories', async (req, res) => {
-    try {
-        const result = await query('SELECT category_name FROM Categories')
-      
-        if (result.length > 0) {
-            console.log('Result: ', result);
-            res.json({ result })
-        } 
-    
-    } catch (err) {
-        console.error('Error adding category:', err.message);
-        res.status(500).json({ error: err.message });
-    }
-});
-
-
 // USER RECORD
 //Retrieves user record from user table
 app.get('/admin/user-record', async(req, res) => {
@@ -360,6 +367,40 @@ app.post('/admin/remove-user', async (req, res) => {
     }
 });
 
+// VIEW PRODUCT
+//For retrieving product details based on the category
+app.get('/admin/latest/product', async (req, res) => {
+    const category = req.query.category;
+    console.log(`VIEW PRODUCT - Received request TO GET PRODUCTS using this category: ${category}`);
+    
+    try {
+        const results = await query('SELECT * FROM Products WHERE category_name = ?', [category]); 
+        // Check what the contents are for the result in the query and filter if needed
+        console.log(`VIEW PRODUCT - Query Results: Success`);
+
+        if (results.length > 0) {
+            // Map through results and include only desired fields
+            const filteredResults = results.map(product => ({
+                product_name: product.product_name,
+                price: product.price,
+                weight: product.weight,
+                weight_unit: product.weight_unit,
+                quantity: product.quantity,
+            }));
+    
+            console.log(`VIEW PRODUCT - Filtered Products: ${JSON.stringify(filteredResults)}`);
+            res.json(filteredResults);
+        } else {
+            console.log('VIEW PRODUCT - No products found for this category');
+            res.json([]);
+        }
+    } catch (err) {
+        console.error('Error retrieving products with cateogry: ', category, 'Message: ', err.message);
+        // Log the error stack for more detail
+        console.error('Error Stack:', err.stack);
+        res.status(500).json({ error: err.message });
+    }
+});
 
 //***************SHOPPER ROUTES**************
 
@@ -367,8 +408,8 @@ app.post('/admin/remove-user', async (req, res) => {
 //Create a new shopping session
 //Edit when there's log in feature already
 app.post('/shopper/create-session', async (req, res) => {
-    const { userID } = req.body;
-    console.log('SHOPPING SESSION - Received request TO CREATE SESSION for this userID: ', req.body);
+    const userID  = req.query.userID;
+    console.log('SHOPPING SESSION - Received request TO CREATE SESSION for this userID: ', userID);
 
     try {
         const [results] = await query('CALL CreateShoppingSession(?)', [userID]);
@@ -387,8 +428,8 @@ app.post('/shopper/create-session', async (req, res) => {
 //Create cart request to the database
 //Create a new cart if there's no cart yet
 app.post('/shopper/create-cart', async (req, res) => {
-    const { sessionID } = req.body; 
-    console.log('CART - Received request TO CREATE CART for this sessionID: ', req.body);
+    const sessionID  = req.query.sessionID; 
+    console.log('CART - Received request TO CREATE CART for this sessionID: ', sessionID);
 
     try {
         // Call the stored procedure
@@ -424,7 +465,7 @@ app.get('/shopper/dialog/product-image', async (req, res) => {
             console.log('DIALOG PRODUCT IMAGE - Product image fetched successfully for barcode: ', barcode, 'Results: ', product_image);
             
             if (product_image == null) {
-                console.log('Sending product image: null - ', product_image);
+                console.log('Sending product image: ', product_image);
                 res.json({ product_image: 'No image' });
             } else {
                 console.log('Sending product image: ', product_image);
@@ -433,7 +474,7 @@ app.get('/shopper/dialog/product-image', async (req, res) => {
 
         } else {
             console.log('DIALOG PRODUCT IMAGE - Product does not exist in database');
-            console.log('Sending product image: []');
+            console.log('Sending product image: ', existingProduct);
             res.json({  product_image: "" });
         }
     
@@ -450,61 +491,50 @@ app.post('/shopper/cart', async (req, res) => {
     console.log(`BARCODE_CART - Received request TO ADD PRODUCT to cart: cart_id=${cart_id}, barcode_id=${barcode_id}, quantity=${quantity}`);
 
     try {
+         // Start a transaction
+         await rawQuery('START TRANSACTION');
+
         // Verify if the cart ID exists
-        const cartResults = await query('SELECT * FROM Carts WHERE cart_id = ?', [cart_id]);
-        console.log('BARCODE_CART - Results from CART TABLE query:', cartResults);
-        // NOTE: result is the contents of cart table
+        const cartResults = await rawQuery('SELECT * FROM Carts WHERE cart_id = ?', [cart_id]);
         if (!cartResults || cartResults.length === 0) {
+            await rawQuery('ROLLBACK');
             console.log(`Cart ID ${cart_id} not found in the database.`);
             return res.status(400).json({ error: 'Cart ID not found' });
         }
+        
+         // Check remaining stocks for the product
+         // Lock the product row in the Products table to prevent race conditions
+         const result = await rawQuery('SELECT quantity FROM Products WHERE barcode_id = ? FOR UPDATE', [barcode_id]);
+         console.log('BARCODE_CART - Results from PRODUCT TABLE query:', result);
+         if (!result || result.length === 0) {
+             await rawQuery('ROLLBACK');
+             console.log('BARCODE_CART - Product not found.');
+             return res.status(404).json({ error: 'Product not found' });
+         }
+
+         const availableQuantity = result[0].quantity;
+         
+         if (quantity > availableQuantity) {
+             await rawQuery('ROLLBACK');
+             console.log('BARCODE_CART - Insufficient quantity in stock');
+             return res.json({ message: 'Insufficient quantity in stock', quantity: availableQuantity})   
+         }
 
         // Check if the product already exists in the cart
-        const existingItemResults = await query('SELECT * FROM CartItems WHERE cart_id = ? AND barcode_id = ?', [cart_id, barcode_id]);
+        const existingItemResults = await rawQuery('SELECT * FROM CartItems WHERE cart_id = ? AND barcode_id = ? FOR UPDATE', [cart_id, barcode_id]);
         console.log('BARCODE_CART - Results from EXISTING ITEM query:', existingItemResults);
         if (existingItemResults.length > 0) {
             // If the item exists, update the quantity after checking remaining stocks for product
-
-            // Check remaining stocks for the product
-            const result = await query('SELECT quantity FROM Products WHERE barcode_id = ?', [barcode_id]);
-            console.log('BARCODE_CART - Results from PRODUCT TABLE query:', result);
-
-            const availableQuantity = result[0].quantity;
-            
-            if (quantity > availableQuantity) {
-                console.log('BARCODE_CART - Insufficient quantity in stock');
-                res.json({ message: 'Insufficient quantity in stock', quantity: availableQuantity});
-                
-            } else {
-                await query('CALL AddExistingItemCart(?, ?, ?)', [cart_id, barcode_id, quantity]);
-                console.log(`BARCODE_CART - Updated quantity for existing item: cart_id=${cart_id}, barcode_id=${barcode_id}, quantity=${quantity}`);
-                return res.json({ message: 'Added Successfully!', quantity: availableQuantity});
-            }
+            await rawQuery('CALL AddExistingItemCart(?, ?, ?)', [cart_id, barcode_id, quantity]);
+            console.log(`BARCODE_CART - Updated quantity for existing item: cart_id=${cart_id}, barcode_id=${barcode_id}, quantity=${quantity}`);            
         } else {
-            // If the item doesn't exist in cart, add to product
-
-            // Check remaining stocks for the product
-            const result = await query('SELECT quantity FROM Products WHERE barcode_id = ?', [barcode_id]);
-            console.log('BARCODE_CART - Results from PRODUCT TABLE query:', result);
-            
-            const availableQuantity = result[0].quantity;
-            
-            if (quantity > availableQuantity) {
-                console.log('BARCODE_CART - Insufficient quantity in stock');
-                res.json({ message: 'Insufficient quantity in stock', quantity: availableQuantity });
-                
-            } else {
-                const result = await query('CALL AddItemCart(?, ?, ?)', [cart_id, barcode_id, quantity]); 
-                console.log('BARCODE_CART - Results from AddItemCart procedure:', result);
-            
-                if (!result || result.length === 0) {
-                    console.log('BARCODE_CART - Error: result is undefined');
-                    res.json({ message: 'Failed to add item to cart', quantity: availableQuantity });
-                } 
-
-                res.json({ message: 'Added Successfully!', quantity: availableQuantity});
-            }
+            // If the item doesn't exist in cart, add to cart
+            await rawQuery('CALL AddItemCart(?, ?, ?)', [cart_id, barcode_id, quantity]); 
+            console.log('BARCODE_CART - Added successfully!');
         }
+
+        await rawQuery('COMMIT');
+        return res.json({ message: 'Added Successfully!', quantity: availableQuantity});
     } catch (err) {
         console.error('Error adding to cart:', err.message);
         res.status(500).json({ error: err.message });
@@ -514,19 +544,19 @@ app.post('/shopper/cart', async (req, res) => {
 // CART ITEMS
 //Get cart items from CART ITEMS TABLE
 app.get('/shopper/cart', async (req, res) => {
-    const cartId = req.query.cartId;
-    console.log('CART ITEMS - with Cart ID:', cartId);
+    const cartID = req.query.cartID;
+    console.log('CART ITEMS - with Cart ID:', cartID);
 
-        if (!cartId) {
+        if (!cartID) {
             console.error('CART ITEMS - Cart ID is required');
             return res.status(400).json({ error: 'Cart ID is required '});
         }
 
-        console.log('CART ITEMS - Received request TO FETCH CART ITEMS for cartId:', cartId);
+        console.log('CART ITEMS - Received request TO FETCH CART ITEMS for cartId:', cartID);
 
     try {
-        const results = await query('SELECT cart_item_id, cart_id, product_name, price, quantity, p_total, product_image FROM CartItems WHERE cart_id = ?', [cartId]);
-        console.log('CART ITEMS - items fetched successfully for cartId: ', cartId, 'Results: ', results);
+        const results = await query('SELECT cart_item_id, cart_id, product_name, price, quantity, p_total, product_image FROM CartItems WHERE cart_id = ?', [cartID]);
+        console.log('CART ITEMS - items fetched successfully for cartId: ', cartID, 'Results: ', results);
         res.json(results);
     } catch (err) {
         console.error('Error fetching cart items:', err.message);
@@ -554,20 +584,29 @@ app.get('/shopper/cart/total/:cart_id', async (req, res) => {
 
 // CART QUANTITY 
 //Update cart item quantity
-app.put('/shopper/cart/:cart_item_id', async (req, res) => {
-    const { cart_item_id } = req.params;
-    const { quantity } = req.body;
-    console.log('CART QUANTITY  - Received request TO UPDATE cart item: ', cart_item_id, 'with new quantity: ', quantity);
+app.put('/shopper/cart/update-quantity', async (req, res) => {
+    const { cart_item_id, newQuantity } = req.query;
+    console.log('CART QUANTITY  - Received request TO UPDATE cart item: ', cart_item_id, 'with new quantity: ', newQuantity);
 
-    if (typeof quantity !== 'number' || quantity <= 0) {
-        console.error('Invalid quantity: ', quantity);
+    if (newQuantity <= 0) {
+        console.error('Invalid quantity: ', newQuantity);
         return res.status(400).json({ error: 'Invalid quantity' });
     }
 
     try {
-        await query('CALL UpdateCartItem(?, ?)', [cart_item_id, quantity]);
-        console.log('CART QUANTITY  - Cart item quantity updated successfully: ', cart_item_id);
-        res.sendStatus(200); 
+        const result = await query('CALL UpdateCartItem(?, ?)', [cart_item_id, newQuantity]);
+
+        // Retrieve the status message from the result
+        let statusMessage = result[0][0]?.status_message || result[1][0]?.status_message;
+
+        if (statusMessage) {
+            console.log('CART QUANTITY - IF BLOCK Status message:', statusMessage);
+            res.status(200).json({ message: statusMessage });
+        } else {
+            console.log('CART QUANTITY - ELSE BLOCK Status message:', statusMessage);
+            res.sendStatus(400);
+        }
+        
     } catch (err) {
         console.error('Error updating cart item: ', err.message);
         res.status(500).json({ error: err.message });
@@ -581,7 +620,7 @@ app.delete('/shopper/cart/delete-item', async (req, res) => {
     console.log('CART REMOVE - Received request TO DELETE cart item: ', cart_item_id);
 
     try {
-        await query('CALL UpdateCartItem(?, ?)', [cart_item_id, newQuantity]);
+        await query('CALL DeleteCartItem(?)', [cart_item_id]);
         console.log('CART REMOVE - Cart item deleted successfully: ', cart_item_id);
         res.sendStatus(200); 
     } catch {
@@ -615,7 +654,7 @@ app.get('/shopper/products/category/:category', async (req, res) => {
                 category: product.category
             }));
     
-            console.log(`MANUAL SELECTION - Filtered Products: ${JSON.stringify(filteredResults)}`);
+           // console.log(`MANUAL SELECTION - Filtered Products: ${JSON.stringify(filteredResults)}`);
             res.json(filteredResults);
         } else {
             console.log('MANUAL SELECTION - No products found for this category');
@@ -630,70 +669,95 @@ app.get('/shopper/products/category/:category', async (req, res) => {
 });
 
 // MANUAL SELECTION CART
-//Add product to cart through manual product selection using product name and quantity
+// Add product to cart through manual product selection using product name and quantity
 app.post('/shopper/manual-selection/cart', async (req, res) => {
     const { cart_id, product_name, quantity } = req.body;
     console.log(`MANUAL SELECTION CART - Received request TO ADD PRODUCT to cart: cart_id=${cart_id}, product_name=${product_name}, quantity=${quantity}`);
 
     try {
+        // Start a transaction
+        await rawQuery('START TRANSACTION');
+
         // Verify if the cart ID exists
-        const cartResults = await query('SELECT * FROM Carts WHERE cart_id = ?', [cart_id]);
+        const cartResults = await rawQuery('SELECT * FROM Carts WHERE cart_id = ?', [cart_id]);
         if (!cartResults || cartResults.length === 0) {
+            await rawQuery('ROLLBACK');
             console.log(`MANUAL SELECTION CART - Cart ID ${cart_id} not found in the database.`);
             return res.status(400).json({ error: 'Cart ID not found' });
         }
-        // Check if the product already exists in the cart
-        const existingItemResults = await query('SELECT * FROM CartItems WHERE cart_id = ? AND product_name = ?', [cart_id, product_name]);
-        if (existingItemResults.length > 0) {
-            // If the item exists, update quantity after checking remaining stocks in database
 
-            // Check remaining stocks for the product
-            const result = await query('SELECT quantity FROM Products WHERE product_name = ?', [product_name]);
-            console.log('MANUAL SELECTION CART - Results from PRODUCT TABLE query:', result);
-  
-            const availableQuantity = result[0].quantity;
-              
-            if (quantity > availableQuantity) {
-                console.log('MANUAL SELECTION CART - Insufficient quantity in stock');
-                res.json({ message: 'Insufficient quantity in stock', quantity: availableQuantity});     
-           } else {
-                await query('CALL ManualAddExistingItemCart(?, ?, ?)', [cart_id, product_name, quantity]);
-                console.log(`MANUAL SELECTION CART - Updated quantity for existing item: cart_id=${cart_id}, product_name=${product_name}, quantity=${quantity}`);
-                return res.json({ message: 'Added Successfully!', quantity: availableQuantity});
-            }
-
-        } else {
-            // If the item doesn't exist in cart, add item
-            const result = await query('SELECT quantity FROM Products WHERE product_name = ?', [product_name]);
-            console.log('MANUAL SELECTION CART - Results from PRODUCT TABLE query:', result);
-
-            const availableQuantity = result[0].quantity;
-            
-            if (quantity > availableQuantity) {
-                console.log('MANUAL SELECTION CART - Insufficient quantity in stock');
-                res.json({ message: 'Insufficient quantity in stock', quantity: availableQuantity});
-                
-            } else {
-                const result = await query('CALL ManualAddItemCart(?, ?, ?)', [cart_id, product_name, quantity]);
-                console.log('MANUAL SELECTION CART - Results from ManualAddItemCart procedure:', result);
-                const cartItemID = result[0][0].cart_item_id;
-                console.log(`MANUAL SELECTION CART - Product added to cart: cartItemID=${cartItemID}`);
-            
-                if (!result || result.length === 0) {
-                    console.log('MANUAL SELECTION CART - Error: result is undefined');
-                    res.json({ message: 'Failed to add item to cart', quantity: availableQuantity});
-                } 
-                    
-              //  const cartItemID = result[0][0].cart_item_id;
-              //  console.log(`BARCODE_CART - Product added to cart: cartItemID=${cartItemID}`);
-                res.json({ message: 'Added Successfully!', quantity: availableQuantity});
-            }
+        // Lock the product row in the Products table to prevent race conditions
+        const productResults = await rawQuery('SELECT quantity FROM Products WHERE product_name = ? FOR UPDATE', [product_name]);
+        if (!productResults || productResults.length === 0) {
+            await rawQuery('ROLLBACK');
+            console.log('MANUAL SELECTION CART - Product not found.');
+            return res.status(404).json({ error: 'Product not found' });
         }
+
+        const availableQuantity = productResults[0].quantity;
+
+        if (quantity > availableQuantity) {
+            await rawQuery('ROLLBACK');
+            console.log('MANUAL SELECTION CART - Insufficient quantity in stock');
+            return res.json({ message: 'Insufficient quantity in stock', quantity: availableQuantity });
+        }
+
+        // Check if the product already exists in the cart
+        const existingItemResults = await rawQuery('SELECT * FROM CartItems WHERE cart_id = ? AND product_name = ? FOR UPDATE', [cart_id, product_name]);
+        if (existingItemResults.length > 0) {
+            // Update the existing item's quantity
+            await rawQuery('CALL ManualAddExistingItemCart(?, ?, ?)', [cart_id, product_name, quantity]);
+            console.log(`MANUAL SELECTION CART - Updated quantity for existing item: cart_id=${cart_id}, product_name=${product_name}, quantity=${quantity}`);
+        } else {
+            // Add the item to the cart
+            const addItemResults = await rawQuery('CALL ManualAddItemCart(?, ?, ?)', [cart_id, product_name, quantity]);
+            console.log(`MANUAL SELECTION CART - Product added to cart: ${JSON.stringify(addItemResults)}`);
+        }
+
+        // Commit the transaction
+        await rawQuery('COMMIT');
+        res.json({ message: 'Added Successfully!', quantity: availableQuantity });
+
     } catch (err) {
         console.error('Error adding to cart:', err.message);
+        await rawQuery('ROLLBACK');
         res.status(500).json({ error: err.message });
     }
 });
+
+// CHECK STOCK
+app.post('/shopper/check-stock', async (req, res) => {
+    const cartID = req.query.cartID;
+
+    console.log(`CHECK STOCK - Received request to check stock for cartID: ${cartID}`);
+
+    try {
+        // Call the stored procedure with the cartID parameter
+        const dbResult = await query('CALL CheckCartStock(?)', [cartID]);
+
+        // Check if we received a result, which should be a single row with either `error_message` or `success_message`
+        const result = dbResult[0][0];
+
+        if (result.error_message) {
+            // If there is an `error_message`, return it with a 400 status code indicating a client error
+            res.status(200).json({ message: result.error_message });
+            console.log(`CHECK STOCK - Error message: `, result.error_message);
+        } else if (result.success_message) {
+            // If there is a `success_message`, send it with a 200 status code
+            res.status(200).json({ message: result.success_message });
+            console.log(`CHECK STOCK - Success message: `, result.success_message);
+        } else {
+            // In case of an unexpected format, handle the error
+            res.status(500).json({ error: 'Unexpected response format from stored procedure' });
+        }
+    } catch (err) {
+        console.error('Error checking cart stock:', err);
+        res.status(500).json({ error: err.message });
+    }
+});
+
+
+
 
 // PAYMENT METHOD
 //Update payment method in transactions table
@@ -729,10 +793,19 @@ app.post('/shopper/payment-method', async (req, res) => {
             }
         } else {
             // Call the stored procedure to create a new transaction
-            const [results] = await query('CALL CreateTransaction(?, ?, ?)', [userID, cartID, paymentMethod]);
+            const dbResults = await query('CALL CreateTransaction(?, ?, ?)', [userID, cartID, paymentMethod]);
+
+            if (!Array.isArray(dbResults) || dbResults.length === 0) {
+                throw new Error('Unexpected result format from database');
+            }
+        
+            const results = dbResults[0];
             const receiptNumber = results[0]?.official_receiptnum;
-            console.log('PAYMENT METHOD - Query Results: ', receiptNumber);
-            console.log('Sending receipt number: ', receiptNumber);
+        
+            if (!receiptNumber) {
+                throw new Error('Receipt number not generated');
+            }
+        
             return res.json({ receiptNumber });
         }
     } catch (err) {
@@ -741,6 +814,77 @@ app.post('/shopper/payment-method', async (req, res) => {
         return res.status(500).json({ error: err.message });
     }
 });
+
+
+// REMOVE INSUFFICIENT QUANTITY
+app.post('/shopper/remove/item', async (req, res) => {
+    const cartID = req.query.cartID;
+
+    if (!cartID) {
+        console.error("REMOVE INSUFFICIENT QUANTITY - Missing cartID in request");
+        return res.sendStatus(400); // Send only status code 400 for missing cartID
+    }
+
+    console.log(`REMOVE INSUFFICIENT QUANTITY - Received request to update status for cartID: ${cartID}`);
+
+    try {
+        // Call the stored procedure with the cartID parameter
+        const result = await query('CALL RemoveInsufficientStockCartItems(?)', [cartID]);
+
+        if (result && result[0] && result[0][0]) {
+            // Check for success or error in stored procedure response
+            if (result[0][0].success_message) {
+                console.log("REMOVE INSUFFICIENT QUANTITY - Status updated successfully");
+                res.sendStatus(200); // Send only status code 200 on success
+            } else {
+                console.log("REMOVE INSUFFICIENT QUANTITY - Error in status update:", result[0][0].error_message);
+                res.sendStatus(400); // Send only status code 400 if there's an error message
+            }
+        } else {
+            console.log("REMOVE INSUFFICIENT QUANTITY - Unexpected response format from stored procedure");
+            res.sendStatus(500); // Send only status code 500 for unexpected format
+        }
+    } catch (err) {
+        console.error("Error removing item:", err);
+        res.sendStatus(500); // Send only status code 500 for server error
+    }
+});
+
+
+// UPDATE STATUS
+app.post('/shopper/update/status', async (req, res) => {
+    const cartID = req.query.cartID;
+
+    if (!cartID) {
+        console.error("UPDATE STATUS - Missing cartID in request");
+        return res.sendStatus(400); // Send only status code 400 for missing cartID
+    }
+
+    console.log(`UPDATE STATUS - Received request to update status for cartID: ${cartID}`);
+
+    try {
+        // Call the stored procedure with the cartID parameter
+        const result = await query('CALL UpdateStatus(?)', [cartID]);
+
+        if (result && result[0] && result[0][0]) {
+            // Check for success or error in stored procedure response
+            if (result[0][0].success_message) {
+                console.log("UPDATE STATUS - Status updated successfully");
+                res.sendStatus(200); // Send only status code 200 on success
+            } else {
+                console.log("UPDATE STATUS - Error in status update:", result[0][0].error_message);
+                res.sendStatus(400); // Send only status code 400 if there's an error message
+            }
+        } else {
+            console.log("UPDATE STATUS - Unexpected response format from stored procedure");
+            res.sendStatus(500); // Send only status code 500 for unexpected format
+        }
+    } catch (err) {
+        console.error("Error updating status:", err);
+        res.sendStatus(500); // Send only status code 500 for server error
+    }
+});
+
 
 // CHECKOUT
 //Retrieves receipt details from transaction and transaction items table
@@ -807,18 +951,27 @@ app.get('/shopper/transaction-history', async (req, res) => {
 });
 
 // END SESSION
-app.post('/shopper/end-session', async (req,res) => {
-    const sessionID = req.query.sessionID;
+app.post('/shopper/end-session', async (req, res) => {
+    const sessionID = req.query.sessionID; 
     console.log(`END SESSION - Received request TO END SESSION for this sessionID: ${sessionID}`);
 
-    try {
-        const result = await query('CALL EndShoppingSession(?)', [sessionID]);
-        console.log('Result: ', result);
-        res.json(result);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
+    // Validate input
+    if (!sessionID) {
+        return res.status(400).json({ error: 'Session ID is required' });
     }
 
+    try {
+        const [result] = await query('CALL EndShoppingSession(?)', [sessionID]); // Store the result
+
+        // Log the result (assuming result is an array)
+        console.log('END SESSION - Procedure result: ', result);
+
+        // Send back the result
+        res.json(result);
+    } catch (err) {
+        console.error('END SESSION - Error: ', err); // Log the error for debugging
+        res.status(500).json({ error: err.message });
+    }
 });
 
 //**********VERIFIER ROUTE***************
@@ -851,14 +1004,15 @@ app.get('/verifier/receipt-number', async (req, res) => {
     try {
         // Query to check if the receipt number exists
         const results = await query('SELECT official_receiptnum FROM Transactions WHERE official_receiptnum = ?', [receipt_num]);
+        console.log(`Result: `, results);
 
         if (results.length > 0) {
             const receiptNumber = results[0]?.official_receiptnum;
             console.log(`Official receipt number: `, receiptNumber);
-            res.json({ receipt_num: receiptNumber });
+            res.json({ message: 'Matched' }); 
         } else {
             console.log('No receipt number found');
-            res.json({ receipt_num: null });
+            res.json({ message: null });
         }
     } catch (err) {
         console.error('Error fetching receipt items:', err.message);
@@ -929,7 +1083,6 @@ app.post('/verifier/verification/status', async (req,res) => {
     }
 
 });
-
 
 
 // Set up the server

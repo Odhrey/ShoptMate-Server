@@ -7,7 +7,7 @@ const mysql = require('mysql2/promise');
 //linksys - '192.168.1.125'
 const pool = mysql.createPool({
     //change host based on the ip of the host laptop
-    host: '192.168.1.9',
+    host: '192.168.1.10',
     user: 'lao2',
     password: 'gojosatoru3557',
     database: 'shopmate_db',
@@ -30,6 +30,20 @@ async function query(sql, params) {
     }
 }
 
+// Define the rawQuery function for non-prepared statements
+async function rawQuery(sql, params) {
+    const connection = await pool.getConnection();
+    try {
+        const [results] = await connection.query(sql, params);
+        return results;
+    } catch (err) {
+        console.error('Error in rawQuery function:', err.message);
+        throw err;
+    } finally {
+        connection.release();
+    }
+}
+
 
 // Test the database connection and log the result
 pool.getConnection()
@@ -41,4 +55,4 @@ pool.getConnection()
         console.error('Failed to connect to the database:', err.message);
     });
 
-module.exports = { query, pool };
+module.exports = { query, rawQuery, pool };
