@@ -1,14 +1,9 @@
 const express = require('express');
-//const mysql = require('mysql2/promise');
-const path = require('path');
 const bodyParser = require('body-parser');
 const { query, rawQuery, pool } = require('./db'); 
-
-const { v4: uuidv4 } = require('uuid');
 const JsBarcode = require('jsbarcode');
 const { createCanvas } = require('canvas');
-const moment = require('moment');
- 
+
 const app = express();
 const port = 3000;
 
@@ -34,18 +29,21 @@ const generateBarcode = (barcode) => {
 //**********SERVER CONNECTION ROUTES************
 
 // PING SERVER
-// Ping server to determine if server is reachable or unreachable
+// Used to verify if the server is reachable and operational
 app.get('/ping', (req, res) => {
-    res.status(200).send('Pong');
+    res.status(200).send('Ping');
 });
 
 //**********AUTHENTICATION ROUTES************
 
 // REGISTRATION
-// Add new user to Users table in database
+// Handles user registration by adding the new user using AddUser stored procedure
+
+// Handles user registration by adding a new user to the "Users" table in the database.
+// Checks for username uniqueness before creating a new record.
 app.post('/registration/user/name/password/role', async (req, res) => {
     const { userName, userPassword, userRole } = req.body;
-    console.log(` REGISTRATION - Received request TO ADD TO USER TABLE:\n userName: ${userName} \n userPassword: ${userPassword} \n userRole: ${userRole}`);
+    console.log(`REGISTRATION - Received request TO ADD TO USER TABLE:\n userName: ${userName} \n userPassword: ${userPassword} \n userRole: ${userRole}`);
 
     try {
         // Check if the username already exists
@@ -77,7 +75,9 @@ app.post('/registration/user/name/password/role', async (req, res) => {
 });
 
 // LOG IN
-// Check if user exists based oin username in the Users table
+// Handles login by checking if the user exists in the ‘Users’ table using the username and user role
+
+// Checks if user exists based on username and role name in the Users table
 app.post('/login/user/name/role', async (req, res) => {
     const { userName, userRole } = req.body;
     console.log(`LOG IN - Received request TO CHECK USER TABLE:\n username: ${userName} \n userRole: ${userRole}`);
@@ -104,6 +104,8 @@ app.post('/login/user/name/role', async (req, res) => {
 });
 
 // CHANGE PASSWORD
+// Handles change password by using CreatePasswordReset stored procedure
+
 // Change user password based on username in the Users table
 app.post('/login/user/change/password', async (req, res) => {
     const { userName, userPassword } = req.body;
@@ -129,6 +131,7 @@ app.post('/login/user/change/password', async (req, res) => {
 });
 
 // DASHBOARD CARD USER ID 
+// Retrieves the user id for the dashboard card
 app.post('/dashboard/user-card/userID', async (req, res) => {
     const { userName, userRole } = req.body;
     console.log(`DASHBOARD CARD USER ID - Received request TO RETRIEVE USER ID for this user: ${userName}, userRole: ${userRole}`);
@@ -153,7 +156,9 @@ app.post('/dashboard/user-card/userID', async (req, res) => {
 //**********ADMIN ROUTES************
 
 // LATEST CATEGORIES
-//Retrieve latest categories from categories table
+// retrieves the categories from the Categories table 
+
+//Retrieve latest categories from categories table for the category spinner
 app.get('/admin/latest/categories', async (req, res) => {
     try {
         const result = await query('SELECT category_name FROM Categories')
@@ -170,7 +175,9 @@ app.get('/admin/latest/categories', async (req, res) => {
 });
 
 // NEW CATEGORY
-//Adds new category to the categroy table
+// handles the addition of a new category by using AddCategory stored procedure
+
+// Adds new category to the categroy table
 app.post('/admin/categories', async (req, res) => {
     const category = req.query.category;
     console.log('NEW CATEGORY - Request received: ', req.query);
@@ -197,8 +204,8 @@ app.post('/admin/categories', async (req, res) => {
 async function addProduct(barcodeNumber, barcodeImage, productName, categoryName, price, weight, weightUnit, Quantity) {
     const queryStr = 'CALL AddProduct(?, ?, ?, ?, ?, ?, ?, ?)';
     try {
-
         console.log('Executing Query:', queryStr, [barcodeNumber, productName, categoryName, price, weight, weightUnit, Quantity]);
+        //remove?
         const results = await query(queryStr, [barcodeNumber, barcodeImage, productName, categoryName, price, weight, weightUnit, Quantity]);
         return { barcodeImage: barcodeImage, name: productName, category: categoryName, price: price, weight: weight, quantity: Quantity, weight_unit: weightUnit};
     } catch (err) {
@@ -209,6 +216,8 @@ async function addProduct(barcodeNumber, barcodeImage, productName, categoryName
 }
 
 // NEW PRODUCT
+// handles the addition of a new product by using AddProduct stored procedure
+
 //Adds new product to products table based on admin input
 app.post('/admin/products', async (req, res) => {
     const { name, weight, price, category, weight_unit, barcode_id, quantity } = req.body;
@@ -230,6 +239,8 @@ app.post('/admin/products', async (req, res) => {
 });
 
 // SALES REPORT
+// handles retrieving report ID for a single date using GetSalesDataByDate stored procedure
+
 //Generate sales report for one date
 app.post('/admin/sales-report/one-date', async (req, res) => {
     const userID = req.query.userID;
@@ -255,6 +266,8 @@ app.post('/admin/sales-report/one-date', async (req, res) => {
 });
 
 // SALES REPORT 2
+// handles retrieving report ID for two dates using GetSalesData stored procedure
+
 //Generate sales report for two dates
 app.post('/admin/sales-report/two-dates', async (req, res) => {
     const userID = req.query.userID;
@@ -408,16 +421,49 @@ app.get('/admin/latest/product', async (req, res) => {
 //Create a new shopping session
 //Edit when there's log in feature already
 app.post('/shopper/create-session', async (req, res) => {
-    const userID  = req.query.userID;
-    console.log('SHOPPING SESSION - Received request TO CREATE SESSION for this userID: ', userID);
+    const userID = req.query.userID;
+    console.log('SHOPPING SESSION - Received request TO CREATE SESSION for this userID:', userID);
 
     try {
-        const [results] = await query('CALL CreateShoppingSession(?)', [userID]);
-        console.log('SHOPPING SESSION - Results from CreateShoppingSession: ', results);
-        const newSessionID = results[0]?.session_id;
-        console.log('New session ID: ', newSessionID);
-        console.log('Sending session ID:', newSessionID);
-        res.json({ session_id: newSessionID });
+        // Retrieve existing sessions for the user
+        const result = await query('SELECT session_id, status FROM ShoppingSessions WHERE user_id = ?', [userID]);
+        
+        if (result.length > 0) {
+            // Check if there’s any active session among the existing sessions
+            const activeSession = result.find(session => session.status === 'active');
+            
+            if (activeSession) {
+                // If an active session exists, return it
+                console.log('Existing active session ID:', activeSession.session_id);
+                res.json({ session_id: activeSession.session_id });
+            } else {
+                // No active sessions, proceed to create a new session
+                const [newSessionResult] = await query('CALL CreateShoppingSession(?)', [userID]);
+                console.log('SHOPPING SESSION - Results from CreateShoppingSession:', newSessionResult);
+                
+                // Extract the new session ID
+                const newSessionID = newSessionResult[0]?.session_id;
+                if (newSessionID) {
+                    console.log('New session ID:', newSessionID);
+                    res.json({ session_id: newSessionID });
+                } else {
+                    throw new Error('Failed to generate a new session ID');
+                }
+            }
+        } else {
+            // No sessions found, create a new session
+            const [newSessionResult] = await query('CALL CreateShoppingSession(?)', [userID]);
+            console.log('SHOPPING SESSION - Results from CreateShoppingSession:', newSessionResult);
+            
+            // Extract the new session ID
+            const newSessionID = newSessionResult[0]?.session_id;
+            if (newSessionID) {
+                console.log('New session ID:', newSessionID);
+                res.json({ session_id: newSessionID });
+            } else {
+                throw new Error('Failed to generate a new session ID');
+            }
+        }
     } catch (err) {
         console.error('Error creating session:', err.message);
         res.status(500).json({ error: err.message });
@@ -426,20 +472,37 @@ app.post('/shopper/create-session', async (req, res) => {
 
 // CART ID
 //Create cart request to the database
-//Create a new cart if there's no cart yet
+//Create a new cart if there's no active cart or if the existing cart is completed
 app.post('/shopper/create-cart', async (req, res) => {
-    const sessionID  = req.query.sessionID; 
-    console.log('CART - Received request TO CREATE CART for this sessionID: ', sessionID);
+    const sessionID = req.query.sessionID;
+    console.log('CART - Received request TO CREATE CART for this sessionID:', sessionID);
 
     try {
-        // Call the stored procedure
+        // Check if there is any cart associated with the session ID
+        const result = await query('SELECT cart_id, status FROM Carts WHERE session_id = ?', [sessionID]);
+        
+        if (result.length > 0) {
+            // If an active cart exists, return its cart ID
+            const activeCart = result.find(cart => cart.status === 'active');
+            if (activeCart) {
+                const activeCartID = activeCart.cart_id;
+                console.log('Active cart ID found:', activeCartID);
+                return res.json({ cartID: activeCartID });
+            }
+        }
+
+        // No active cart found, or the only existing cart is completed, so create a new cart
         const [results] = await query('CALL CreateCart(?)', [sessionID]);
         console.log('CART - Results from CreateCart:', results);
+
         // Retrieve the generated cart_id from the results
-        const newCartId = results[0]?.cart_id; 
-        console.log(`New cart created with ID: `, newCartId);
-        console.log('Sending cart ID:', newCartId);
-        res.json({ cartID: newCartId });
+        const newCartID = results[0]?.cart_id;
+        if (newCartID) {
+            console.log('New cart created with ID:', newCartID);
+            return res.json({ cartID: newCartID });
+        } else {
+            throw new Error('Failed to generate a new cart ID');
+        }
     } catch (err) {
         console.error('Error creating new cart:', err.message);
         res.status(500).json({ error: err.message });
@@ -447,39 +510,42 @@ app.post('/shopper/create-cart', async (req, res) => {
 });
 
 // DIALOG PRODUCT IMAGE 
-//Get product image from PRODUCTS TABLE
+// Get product image from PRODUCTS TABLE
 app.get('/shopper/dialog/product-image', async (req, res) => {
     const barcode = req.query.barcode;
-     console.log('DIALOG PRODUCT IMAGE - Received request TO FETCH PRODUCT IMAGE for this barcode:', barcode);
+    console.log('DIALOG PRODUCT IMAGE - Received request TO FETCH PRODUCT IMAGE for this barcode:', barcode);
 
     if (!barcode) {
         console.error('DIALOG PRODUCT IMAGE - Barcode ID is required');
-        return res.status(400).json({ error: 'Barcode ID is required '});
-      }
+        return res.status(400).json({ error: 'Barcode ID is required' });
+    }
 
     try {
-        const existingProduct = await query('SELECT * FROM Products WHERE barcode_id = ?', [barcode]);
+        // First, check if the product exists in the database
+        const existingProduct = await query('SELECT 1 FROM Products WHERE barcode_id = ?', [barcode]);
+
         if (existingProduct.length > 0) {
-            const results = await query('SELECT product_image FROM Products WHERE barcode_id = ?', [barcode]);
-            const product_image = results[0]?.product_image;
-            console.log('DIALOG PRODUCT IMAGE - Product image fetched successfully for barcode: ', barcode, 'Results: ', product_image);
-            
-            if (product_image == null) {
-                console.log('Sending product image: ', product_image);
-                res.json({ product_image: 'No image' });
-            } else {
-                console.log('Sending product image: ', product_image);
-                res.json({ product_image });
+            // Product exists, so retrieve only the required details
+            const productDetails = await query('SELECT product_name, product_image, price, weight, weight_unit FROM Products WHERE barcode_id = ?',[barcode]);
+
+            const product = productDetails[0]; // Expecting one row only
+
+            // Check if the product image is null
+            if (product.product_image == null) {
+                product.product_image = 'No image';
             }
 
+            console.log('DIALOG PRODUCT IMAGE - Product details fetched successfully for barcode:', barcode, 'Results:', product);
+            res.json(product);
+
         } else {
+            // Product does not exist
             console.log('DIALOG PRODUCT IMAGE - Product does not exist in database');
-            console.log('Sending product image: ', existingProduct);
-            res.json({  product_image: "" });
+            res.status(400).json({message: "Product does not exist in database" });
         }
-    
+
     } catch (err) {
-        console.error('Error fetching cart items:', err.message);
+        console.error('Error fetching product details:', err.message);
         res.status(500).json({ error: err.message });
     }
 });
@@ -726,6 +792,8 @@ app.post('/shopper/manual-selection/cart', async (req, res) => {
 });
 
 // CHECK STOCK
+// handle checking stock using CheckCartStock stored procedure 
+// handles checking the current stock levels  using CheckCartStock stored procedure 
 app.post('/shopper/check-stock', async (req, res) => {
     const cartID = req.query.cartID;
 
@@ -756,43 +824,30 @@ app.post('/shopper/check-stock', async (req, res) => {
     }
 });
 
+const paymentQueue = [];
+let isProcessingQueue = false;
 
-
-
-// PAYMENT METHOD
-//Update payment method in transactions table
-app.post('/shopper/payment-method', async (req, res) => {
-    const { userID, cartID, paymentMethod } = req.body;
-    console.log(`PAYMENT METHOD - Received request TO UPDATE TRANSACTIONS TABLE using:\n userID: ${userID}\n cartID: ${cartID}\n payment method: ${paymentMethod}`);
-    
-    if (!cartID) {
-        console.error('PAYMENT METHOD - Cart ID is required');
-        return res.status(400).json({ error: 'Cart ID is required' });
-    }
-
+async function handlePaymentRequest(req, res) {
     try {
-        // Check if a transaction already exists for the given cart ID
+        const { userID, cartID, paymentMethod } = req.body;
+        console.log(`PAYMENT METHOD - Processing request for cartID: ${cartID}`);
+        
         const existingTransactions = await query('SELECT * FROM Transactions WHERE cart_id = ?', [cartID]);
         console.log('Existing Transactions:', existingTransactions);
         
         if (existingTransactions.length > 0) {
-            // Update the payment method for the existing transaction
             const updateResults = await query('UPDATE Transactions SET payment_method = ? WHERE cart_id = ?', [paymentMethod, cartID]);
             console.log('PAYMENT METHOD - Update Results:', updateResults);
             
             if (updateResults.affectedRows > 0) {
-                // Retrieve the updated transaction to get the receipt number
                 const updatedTransaction = await query('SELECT official_receiptnum FROM Transactions WHERE cart_id = ?', [cartID]);
-                console.log('PAYMENT METHOD - Updated Transaction:', updatedTransaction);
                 const receiptNumber = updatedTransaction[0]?.official_receiptnum;
                 console.log('PAYMENT METHOD - Receipt Number:', receiptNumber);
                 return res.json({ receiptNumber });
             } else {
-                console.log('Unable to update payment method');
-                return res.status(404).json({ error: 'Unable to update payment method' });
+                throw new Error('Unable to update payment method');
             }
         } else {
-            // Call the stored procedure to create a new transaction
             const dbResults = await query('CALL CreateTransaction(?, ?, ?)', [userID, cartID, paymentMethod]);
 
             if (!Array.isArray(dbResults) || dbResults.length === 0) {
@@ -806,15 +861,45 @@ app.post('/shopper/payment-method', async (req, res) => {
                 throw new Error('Receipt number not generated');
             }
         
-            return res.json({ receiptNumber });
+            res.json({ receiptNumber });
         }
     } catch (err) {
         console.error('Error processing payment method:', err.message);
-        console.error('Error Stack:', err.stack);
-        return res.status(500).json({ error: err.message });
+        res.status(500).json({ error: err.message });
     }
-});
+}
 
+async function processPaymentQueue() {
+    if (isProcessingQueue || paymentQueue.length === 0) return;
+
+    isProcessingQueue = true;
+    try {
+        while (paymentQueue.length > 0) {
+            const { req, res } = paymentQueue.shift();
+            await handlePaymentRequest(req, res);
+        }
+    } finally {
+        isProcessingQueue = false;
+    }
+}
+
+// PAYMENT METHOD
+// Update payment method in transactions table
+app.post('/shopper/payment-method', (req, res) => {
+    const { userID, cartID, paymentMethod } = req.body;
+    console.log(`PAYMENT METHOD - Received request TO UPDATE TRANSACTIONS TABLE using:\n userID: ${userID}\n cartID: ${cartID}\n payment method: ${paymentMethod}`);
+    
+    if (!cartID) {
+        console.error('PAYMENT METHOD - Cart ID is required');
+        return res.status(400).json({ error: 'Cart ID is required' });
+    }
+
+    // Add request to queue
+    paymentQueue.push({ req, res });
+
+    // Process the queue
+    processPaymentQueue();
+});
 
 // REMOVE INSUFFICIENT QUANTITY
 app.post('/shopper/remove/item', async (req, res) => {
@@ -849,42 +934,6 @@ app.post('/shopper/remove/item', async (req, res) => {
         res.sendStatus(500); // Send only status code 500 for server error
     }
 });
-
-
-// UPDATE STATUS
-app.post('/shopper/update/status', async (req, res) => {
-    const cartID = req.query.cartID;
-
-    if (!cartID) {
-        console.error("UPDATE STATUS - Missing cartID in request");
-        return res.sendStatus(400); // Send only status code 400 for missing cartID
-    }
-
-    console.log(`UPDATE STATUS - Received request to update status for cartID: ${cartID}`);
-
-    try {
-        // Call the stored procedure with the cartID parameter
-        const result = await query('CALL UpdateStatus(?)', [cartID]);
-
-        if (result && result[0] && result[0][0]) {
-            // Check for success or error in stored procedure response
-            if (result[0][0].success_message) {
-                console.log("UPDATE STATUS - Status updated successfully");
-                res.sendStatus(200); // Send only status code 200 on success
-            } else {
-                console.log("UPDATE STATUS - Error in status update:", result[0][0].error_message);
-                res.sendStatus(400); // Send only status code 400 if there's an error message
-            }
-        } else {
-            console.log("UPDATE STATUS - Unexpected response format from stored procedure");
-            res.sendStatus(500); // Send only status code 500 for unexpected format
-        }
-    } catch (err) {
-        console.error("Error updating status:", err);
-        res.sendStatus(500); // Send only status code 500 for server error
-    }
-});
-
 
 // CHECKOUT
 //Retrieves receipt details from transaction and transaction items table
@@ -1090,6 +1139,6 @@ const server = app.listen(port, () => {
     console.log(`Server running at http://localhost:${port}`);
 });
 
-server.setTimeout(60000); // Set timeout to 10 seconds (10000 milliseconds)
+server.setTimeout(1000000); // Set timeout to 10 seconds (10000 milliseconds)
 
 

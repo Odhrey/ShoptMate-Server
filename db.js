@@ -1,19 +1,16 @@
 const mysql = require('mysql2/promise');
 
 //Create connection pool. Pool-specific settings are the defaults 
-//pink panther - '192.168.1.17'
-//phone data - '192.168.75.231'
-//jbca - '192.168.0.23'
-//linksys - '192.168.1.125'
+//phone data - '192.168.171.231'
 const pool = mysql.createPool({
     //change host based on the ip of the host laptop
-    host: '192.168.1.10',
+    host: '192.168.171.231',
     user: 'lao2',
     password: 'gojosatoru3557',
     database: 'shopmate_db',
     waitForConnections: true,
     connectionLimit: 10,
-    queueLimit: 0
+    queueLimit: 10
 });
 
 // Define the query function
