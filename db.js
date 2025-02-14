@@ -4,7 +4,8 @@ const mysql = require('mysql2/promise');
 //phone data - '192.168.171.231'
 const pool = mysql.createPool({
     //change host based on the ip of the host laptop
-    host: '192.168.171.231',
+    //192.168.171.231
+    host: '192.168.1.20',
     user: 'lao2',
     password: 'gojosatoru3557',
     database: 'shopmate_db',
